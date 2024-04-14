@@ -1,30 +1,114 @@
-const { users } = require('../DataStore');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const asyncHandler = require('express-async-handler');
+const User = require('../models/user.js');
 
-exports.register = async (req, res) => {
-  const { firstName, lastName, email, password, age } = req.body;
+exports.register = asyncHandler(async (req, res) => {
+    const { firstName, lastName, email, password } = req.body;
 
-  if (password.length < 8 || !password.match(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d]{8,}$/)) {
-    return res.status(400).send("Password must be at least 8 characters long, include at least one number, one uppercase and one lowercase letter.");
-  }
+    if (!firstName || !lastName || !email || !password) {
+        res.status(400);
+        throw new Error('Please add all fields');
+    }
 
-  const duplicate = users.find(user => user.email === email);
-  if (duplicate) return res.status(409).send("Email already registered.");
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+        res.status(400);
+        throw new Error('User already exists');
+    }
 
-  const hashedPassword = await bcrypt.hash(password, 8);
-  const newUser = { id: users.length + 1, firstName, lastName, email, password: hashedPassword, age };
-  users.push(newUser);
-  const token = jwt.sign({ userId: newUser.id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-  res.status(201).send({ token });
-};
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
 
-exports.login = async (req, res) => {
-  const { email, password } = req.body;
-  const user = users.find(user => user.email === email);
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).send("Authentication failed.");
-  }
-  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1d' });
-  res.send({ token });
-};
+    const user = await User.create({
+        firstName,
+        lastName,
+        email,
+        password: hashedPassword
+    });
+
+    if (user) {
+        res.status(201).json({
+            _id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            token: generateToken(user._id)
+        });
+    } else {
+        res.status(400);
+        throw new Error('Invalid user data');
+    }
+});
+
+exports.login = asyncHandler(async (req, res) => {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email });
+    if (user && (await bcrypt.compare(password, user.password))) {
+        res.json({
+            _id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            token: generateToken(user._id)
+        });
+    } else {
+        res.status(400);
+        throw new Error('Invalid credentials');
+    }
+});
+
+exports.getUserDetails = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id).select('-password');
+    if (user) {
+        res.json({
+            _id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            subscriptionValidUntil: user.subscriptionValidUntil,
+            restPlans: user.restPlans
+        });
+    } else {
+        res.status(404);
+        throw new Error('User not found');
+    }
+});
+
+exports.updateUserSubscription = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user.id);
+
+    if (user) {
+        user.subscriptionValidUntil = req.body.subscriptionValidUntil || user.subscriptionValidUntil;
+        user.restPlans = req.body.restPlans || user.restPlans;
+
+        await user.save();
+
+        res.json({
+            _id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            subscriptionValidUntil: user.subscriptionValidUntil,
+            restPlans: user.restPlans,
+            token: generateToken(user._id)
+        });
+    } else {
+        res.status(404);
+        throw new Error('User not found');
+    }
+});
+
+exports.logout = asyncHandler(async (req, res) => {
+    
+    res.json({ message: 'Successfully logged out' });
+});
+
+function generateToken(id) {
+    return jwt.sign({ id }, process.env.JWT_SECRET, {
+        expiresIn: '30d',
+    });
+}
+
+
